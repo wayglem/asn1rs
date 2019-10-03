@@ -106,9 +106,7 @@ impl Model<Asn> {
                         Token::Separator(s) if s == ',' => {}
                         Token::Text(s) => {
                             let lower = s.to_lowercase();
-                            if s.eq(",") {
-
-                            } else if lower.eq("from") {
+                            if s.eq(",") {} else if lower.eq("from") {
                                 let token = iter.next().ok_or(Error::UnexpectedEndOfStream)?;
                                 if let Token::Text(from) = token {
                                     import.from = from;
@@ -154,27 +152,66 @@ impl Model<Asn> {
         }
     }
 
+    /*
+        fn read_integer_options(iter: &mut IntoIter<Token>) -> Result<Vec<(String, value)>, Error> {
+
+        }
+    */
+
     fn read_role(iter: &mut IntoIter<Token>) -> Result<Asn, Error> {
         let text = Self::next_text(iter)?;
         if text.eq_ignore_ascii_case("INTEGER") {
-            Self::next_separator_ignore_case(iter, '(')?;
+            let mut token = Self::next_seperator(iter)?;
+            let mut options: Vec<(String, i64)> = vec![];
+            if token.eq_ignore_ascii_case(&'{') {
+                // case where it is an integer with possible values
+                loop {
+                    let option = Self::next_text(iter)?;
+                    Self::next_separator_ignore_case(iter, '(')?;
+                    let value = Self::next_text(iter)?;
+                    Self::next_separator_ignore_case(iter, ')')?;
+                    options.push((option.to_string(), value.parse::<i64>().unwrap()));
+                    let token = Self::next_seperator(iter)?;
+
+                    if !token.eq_ignore_ascii_case(&',') {
+                        assert!(token.eq_ignore_ascii_case(&'}'));
+                        break;
+                    }
+                }
+                token = Self::next_seperator(iter)?;
+            }
+            if !token.eq_ignore_ascii_case(&'(') {
+                return Err(Error::UnexpectedToken(Backtrace::new(), Token::Separator(token)));
+            }
+
             let start = Self::next_text(iter)?;
             Self::next_separator_ignore_case(iter, '.')?;
             Self::next_separator_ignore_case(iter, '.')?;
             let end = Self::next_text(iter)?;
             Self::next_separator_ignore_case(iter, ')')?;
             if start.eq("0") && end.eq("MAX") {
-                Ok(Asn::Integer(None))
+                if options.is_empty() {
+                    Ok(Asn::Integer(None))
+                } else {
+                    Ok(Asn::IntegerWithOptions(options, None))
+                }
             } else if end.eq("MAX") {
                 Err(Error::UnexpectedToken(
                     Backtrace::new(),
                     Token::Text("MAX".into()),
                 ))
             } else {
-                Ok(Asn::Integer(Some(Range(
-                    start.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
-                    end.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
-                ))))
+                if options.is_empty() {
+                    Ok(Asn::Integer(Some(Range(
+                        start.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
+                        end.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
+                    ))))
+                } else {
+                    Ok(Asn::IntegerWithOptions(options, Some(Range(
+                        start.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
+                        end.parse::<i64>().map_err(|_| Error::InvalidRangeValue)?,
+                    ))))
+                }
             }
         } else if text.eq_ignore_ascii_case("BOOLEAN") {
             Ok(Asn::Boolean)
@@ -304,7 +341,10 @@ impl Model<Asn> {
     fn next_seperator(iter: &mut IntoIter<Token>) -> Result<char, Error> {
         match iter.next().ok_or(Error::UnexpectedEndOfStream)? {
             Token::Separator(separator) => Ok(separator),
-            t => Err(Error::UnexpectedToken(Backtrace::new(), t)),
+            t => {
+                println!("unexpected token : {:?}", t);
+                Err(Error::UnexpectedToken(Backtrace::new(), t))
+            }
         }
     }
 
@@ -313,6 +353,8 @@ impl Model<Asn> {
         if token.eq_ignore_ascii_case(&text) {
             Ok(())
         } else {
+            println!("error expected {} got {}", text, token);
+
             Err(Error::ExpectedSeparatorGot(Backtrace::new(), text, token))
         }
     }
@@ -388,7 +430,45 @@ pub(crate) mod tests {
                         role: Asn::Integer(None),
                         optional: true,
                     }
-                ])
+                ]),
+            ),
+            model.definitions[0]
+        );
+    }
+
+    pub(crate) const SIMPLE_INTEGER_STRUCT_WITH_POSSIBLE_VALUES_ASN: &str = r"
+        SimpleSchema DEFINITIONS AUTOMATIC TAGS ::=
+        BEGIN
+
+        Simple ::= SEQUENCE {
+            small INTEGER (0..255),
+            color INTEGER{ red(1), blue(2), green(3)} (0..255)
+        }
+        END
+        ";
+
+    #[test]
+    fn test_simple_asn_sequence_with_possible_values_represented_correctly_as_asn_model() {
+        let model = Model::try_from(Tokenizer::default().parse(SIMPLE_INTEGER_STRUCT_WITH_POSSIBLE_VALUES_ASN)).unwrap();
+
+        assert_eq!("SimpleSchema", model.name);
+        assert_eq!(true, model.imports.is_empty());
+        assert_eq!(1, model.definitions.len());
+        assert_eq!(
+            Definition(
+                "Simple".into(),
+                Asn::Sequence(vec![
+                    Field {
+                        name: "small".into(),
+                        role: Asn::Integer(Some(Range(0, 255))),
+                        optional: false,
+                    },
+                    Field {
+                        name: "color".into(),
+                        role: Asn::IntegerWithOptions(vec![("red".to_string(), 1), ("blue".to_string(), 2), ("green".to_string(), 3)], Some(Range(0, 255))),
+                        optional: false,
+                    }
+                ]),
             ),
             model.definitions[0]
         );
@@ -430,7 +510,7 @@ pub(crate) mod tests {
                         "THE_CAKE_IS_A_LIE".into()
                     ]),
                     optional: true,
-                }])
+                }]),
             ),
             model.definitions[0]
         );
@@ -463,7 +543,7 @@ pub(crate) mod tests {
         assert_eq!(
             Definition(
                 "Ones".into(),
-                Asn::SequenceOf(Box::new(Asn::Integer(Some(Range(0, 1)))))
+                Asn::SequenceOf(Box::new(Asn::Integer(Some(Range(0, 1))))),
             ),
             model.definitions[0]
         );
@@ -472,7 +552,7 @@ pub(crate) mod tests {
                 "NestedOnes".into(),
                 Asn::SequenceOf(Box::new(Asn::SequenceOf(Box::new(Asn::Integer(Some(
                     Range(0, 1)
-                ))))))
+                )))))),
             ),
             model.definitions[1]
         );
@@ -499,7 +579,7 @@ pub(crate) mod tests {
                         ))))),
                         optional: true,
                     },
-                ])
+                ]),
             ),
             model.definitions[2]
         );
@@ -538,7 +618,7 @@ pub(crate) mod tests {
         assert_eq!(
             Definition(
                 "This".into(),
-                Asn::SequenceOf(Box::new(Asn::Integer(Some(Range(0, 1)))))
+                Asn::SequenceOf(Box::new(Asn::Integer(Some(Range(0, 1))))),
             ),
             model.definitions[0]
         );
@@ -547,14 +627,14 @@ pub(crate) mod tests {
                 "That".into(),
                 Asn::SequenceOf(Box::new(Asn::SequenceOf(Box::new(Asn::Integer(Some(
                     Range(0, 1)
-                ))))))
+                )))))),
             ),
             model.definitions[1]
         );
         assert_eq!(
             Definition(
                 "Neither".into(),
-                Asn::Enumerated(vec!["ABC".into(), "DEF".into(),])
+                Asn::Enumerated(vec!["ABC".into(), "DEF".into(), ]),
             ),
             model.definitions[2]
         );
@@ -568,8 +648,8 @@ pub(crate) mod tests {
                         ChoiceEntry("that".into(), Asn::TypeReference("That".into())),
                         ChoiceEntry("neither".into(), Asn::TypeReference("Neither".into())),
                     ]),
-                    optional: false
-                }])
+                    optional: false,
+                }]),
             ),
             model.definitions[3]
         );
@@ -619,7 +699,7 @@ pub(crate) mod tests {
                         },
                     ]),
                     optional: true,
-                }])
+                }]),
             ),
             model.definitions[0]
         );
@@ -681,4 +761,5 @@ pub enum Asn {
     Enumerated(Vec<String>),
     Choice(Vec<ChoiceEntry>),
     TypeReference(String),
+    IntegerWithOptions(Vec<(String, i64)>, Option<Range<i64>>),
 }

@@ -305,6 +305,11 @@ impl Model<Rust> {
 
                 defs.push(Definition(name.into(), Rust::Enum(rust_variants)));
             }
+
+            //Asn::IntegerWithOption(key: String, value: i32) => {};
+            Asn::IntegerWithOptions(_, _) => {
+                //TODO: handle integer with options
+            }
         }
     }
 
@@ -349,6 +354,10 @@ impl Model<Rust> {
                 RustType::Complex(name)
             }
             Asn::TypeReference(name) => RustType::Complex(name.clone()),
+            Asn::IntegerWithOptions(_, _) => {
+                //TODO Add option
+                RustType::U64(Some(Range(0 as u64, 255 as u64)))
+            }
         }
     }
 }
